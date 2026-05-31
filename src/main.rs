@@ -104,6 +104,28 @@ fn main() -> Result<()> {
     let plan_secs = t_plan.elapsed().as_secs_f64();
 
     let dry = args.dry_run || args.list_only;
+
+    // S3 destination: route before any local path handling. The raw last
+    // positional is the dest; `PathBuf::from("s3://…")` would otherwise be
+    // treated as a local path (creating a bogus `s3:/…` dir on disk).
+    let dst_raw = args
+        .paths_raw
+        .last()
+        .map(|s| s.as_str())
+        .unwrap_or_default();
+    if s3::is_s3(dst_raw) {
+        if dry {
+            // No upload on a dry-run; just emit the plan locally.
+            let json = serde_json::to_string_pretty(&plan)?;
+            write_atomic(&PathBuf::from("transfer_plan.json"), json.as_bytes())?;
+            if !args.quiet {
+                eprintln!("dry-run: plan written to transfer_plan.json, no upload.");
+            }
+            return Ok(());
+        }
+        return run_s3(&args, plan, dst_raw);
+    }
+
     let manifest_path: PathBuf = args.manifest.clone().unwrap_or_else(|| {
         if dry && !dst.exists() {
             PathBuf::from("transfer_plan.json")
@@ -130,18 +152,6 @@ fn main() -> Result<()> {
             eprintln!("dry-run: plan written, no transfer.");
         }
         return Ok(());
-    }
-
-    // ── execute (S3 destination) ─────────────────────────────────────────
-    // The raw last positional is the dest; check it before path normalization
-    // so an `s3://…` URI is routed to the uploader instead of the local writer.
-    let dst_raw = args
-        .paths_raw
-        .last()
-        .map(|s| s.as_str())
-        .unwrap_or_default();
-    if s3::is_s3(dst_raw) {
-        return run_s3(&args, plan, dst_raw);
     }
 
     // ── execute (local destination) ──────────────────────────────────────

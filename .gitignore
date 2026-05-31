@@ -25,3 +25,6 @@ build_errors.txt
 be_v2.txt
 gate_*.txt
 push_result.txt
+
+# stray local dir if an s3:// dest is mis-handled
+s3:
