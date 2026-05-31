@@ -74,7 +74,7 @@ pub fn plan(mut entries: Vec<Entry>, opts: &PlanOpts) -> Plan {
     }
 
     // FFD: sort entries descending by size.
-    entries.sort_by(|a, b| b.size.cmp(&a.size));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.size));
 
     let mut bins: Vec<Bin> = Vec::new();
     let mut next_id = 1usize;
@@ -90,7 +90,7 @@ pub fn plan(mut entries: Vec<Entry>, opts: &PlanOpts) -> Plan {
         .take(10)
         .map(|e| (e.rel.clone(), e.size))
         .collect::<Vec<_>>();
-    biggest.sort_by(|a, b| b.1.cmp(&a.1));
+    biggest.sort_by_key(|e| std::cmp::Reverse(e.1));
 
     // remaining capacity -> indices of open "capacity" bins with that slack.
     // Atomic/oversize bins are never inserted here, so they're never reused.

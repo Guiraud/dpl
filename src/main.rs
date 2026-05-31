@@ -249,8 +249,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         // written, so tolerate it rather than failing the manifest write.
         if let Err(e) = f.sync_all() {
             if !archive::fsync_unsupported(&e) {
-                return Err(anyhow::Error::new(e)
-                    .context(format!("fsync temp {}", tmp.display())));
+                return Err(anyhow::Error::new(e).context(format!("fsync temp {}", tmp.display())));
             }
         }
     }
@@ -263,7 +262,7 @@ fn print_summary(
     p: &plan::Plan,
     scan_secs: f64,
     plan_secs: f64,
-    manifest: &PathBuf,
+    manifest: &Path,
     args: &Cli,
 ) -> Result<()> {
     let mut out = std::io::stderr().lock();
