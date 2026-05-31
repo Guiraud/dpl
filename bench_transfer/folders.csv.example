@@ -1,0 +1,3 @@
+source;destination
+/path/to/source/repo-a;/Volumes/Backup/repo-a
+/path/to/source/repo-b;/Volumes/Backup/repo-b

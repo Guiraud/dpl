@@ -1,0 +1,19 @@
+/target
+
+# dpl run artifacts (may leak source filesystem layout)
+transfer_plan.json
+*.tar.zst
+.dpl/
+
+# security-scan session
+/security-scan
+
+# local editor / agent state
+/.claude/
+.continues-handoff.md
+
+# benchmark inputs/outputs contain real local paths — keep private.
+# ship bench_transfer/folders.csv.example instead.
+bench_transfer/folders.csv
+bench_transfer/folders_small.csv
+bench_transfer/results_*.md
