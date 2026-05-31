@@ -56,24 +56,22 @@ impl<W: Write> Write for HashingWriter<W> {
     }
 }
 
-/// Pack a single bin into its `tar.zst` archive at `archive_path`.
+/// Pack a single bin into any byte sink as a `tar.zst` stream.
 ///
-/// Pipeline: tar::Builder -> zstd::Encoder(multithreaded) -> HashingWriter -> BufWriter -> File.
-/// Blake3 hashes the *compressed* bytes so resume can verify what landed on dest.
-pub fn pack_bin(
+/// Pipeline: tar::Builder -> zstd::Encoder(multithreaded) -> HashingWriter -> `W`.
+/// Blake3 hashes the *compressed* bytes so resume/verify can check what landed.
+/// Returns the inner writer (so the caller can flush/sync/close it) plus the
+/// report. This is the shared core behind both the local-file and S3 sinks.
+pub fn pack_bin_into<W: Write>(
     bin: &Bin,
-    archive_path: &Path,
+    writer: W,
     zstd_level: i32,
     zstd_threads: u32,
     mut on_byte: impl FnMut(u64),
-) -> Result<ChunkReport> {
+) -> Result<(W, ChunkReport)> {
     let started = std::time::Instant::now();
 
-    let file = File::create(archive_path)
-        .with_context(|| format!("creating {}", archive_path.display()))?;
-    let buf_writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-    let hashing = HashingWriter::new(buf_writer);
-
+    let hashing = HashingWriter::new(writer);
     let mut encoder = zstd::Encoder::new(hashing, zstd_level)?;
     if zstd_threads > 1 {
         encoder.multithread(zstd_threads)?;
@@ -113,10 +111,38 @@ pub fn pack_bin(
         on_byte(entry.size);
     }
 
-    // Unwrap layers, finalize hash, flush to disk.
+    // Unwrap layers, finalize hash.
     let encoder = builder.into_inner().context("tar::Builder::into_inner")?;
     let hashing = encoder.finish().context("zstd::Encoder::finish")?;
-    let (buf_writer, hash, compressed) = hashing.into_parts();
+    let (writer, hash, compressed) = hashing.into_parts();
+
+    let report = ChunkReport {
+        id: bin.id,
+        archive: bin.archive.clone(),
+        file_count,
+        uncompressed_bytes: uncompressed,
+        compressed_bytes: compressed,
+        blake3: hash.to_hex().to_string(),
+        elapsed_secs: started.elapsed().as_secs_f64(),
+    };
+    Ok((writer, report))
+}
+
+/// Pack a single bin into its `tar.zst` archive at a local `archive_path`,
+/// fsync'ing the result (tolerating ENOTSUP on SMB/NFS/exFAT).
+pub fn pack_bin(
+    bin: &Bin,
+    archive_path: &Path,
+    zstd_level: i32,
+    zstd_threads: u32,
+    on_byte: impl FnMut(u64),
+) -> Result<ChunkReport> {
+    let file = File::create(archive_path)
+        .with_context(|| format!("creating {}", archive_path.display()))?;
+    let buf_writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
+
+    let (buf_writer, report) = pack_bin_into(bin, buf_writer, zstd_level, zstd_threads, on_byte)?;
+
     let file = buf_writer
         .into_inner()
         .map_err(|e| anyhow::anyhow!("BufWriter into_inner: {}", e.into_error()))?;
@@ -130,15 +156,7 @@ pub fn pack_bin(
         }
     }
 
-    Ok(ChunkReport {
-        id: bin.id,
-        archive: bin.archive.clone(),
-        file_count,
-        uncompressed_bytes: uncompressed,
-        compressed_bytes: compressed,
-        blake3: hash.to_hex().to_string(),
-        elapsed_secs: started.elapsed().as_secs_f64(),
-    })
+    Ok(report)
 }
 
 /// True when an fsync error means "this filesystem doesn't support fsync"

@@ -135,6 +135,11 @@ pub struct Cli {
     #[arg(long = "no-skip-appledouble", action = ArgAction::SetTrue)]
     pub no_skip_appledouble: bool,
 
+    /// For an s3:// destination, stream each chunk straight into a multipart
+    /// upload instead of spilling to a local temp file first (no scratch disk).
+    #[arg(long = "nodisk", action = ArgAction::SetTrue)]
+    pub nodisk: bool,
+
     // ── positional (preserved as raw strings for trailing-slash semantics) ─
     /// Transfer: SRC... DST. Restore: ARCHIVE OUT. List: ARCHIVE [PATTERN].
     /// Grep: ARCHIVE. (Per-mode arity is checked in `Cli::mode`.)

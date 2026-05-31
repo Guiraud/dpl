@@ -24,6 +24,11 @@ tar = "0.4"
 zstd = { version = "0.13", features = ["zstdmt"] }
 blake3 = "1.5"
 indicatif = "0.17"
+rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+aws-creds = "0.38"
+aws-region = "0.27"
+os_pipe = "1.2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [profile.release]
 lto = "thin"

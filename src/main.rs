@@ -2,6 +2,7 @@ mod archive;
 mod cli;
 mod plan;
 mod restore;
+mod s3;
 mod scan;
 
 use anyhow::{Context, Result};
@@ -131,7 +132,19 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // ── execute ─────────────────────────────────────────────────────────
+    // ── execute (S3 destination) ─────────────────────────────────────────
+    // The raw last positional is the dest; check it before path normalization
+    // so an `s3://…` URI is routed to the uploader instead of the local writer.
+    let dst_raw = args
+        .paths_raw
+        .last()
+        .map(|s| s.as_str())
+        .unwrap_or_default();
+    if s3::is_s3(dst_raw) {
+        return run_s3(&args, plan, dst_raw);
+    }
+
+    // ── execute (local destination) ──────────────────────────────────────
     let archive_dir = dst.join(".dpl");
     fs::create_dir_all(&archive_dir)
         .with_context(|| format!("creating archive dir {}", archive_dir.display()))?;
@@ -225,6 +238,104 @@ fn main() -> Result<()> {
         eprintln!("  manifest      : {}", manifest_path.display());
     }
 
+    Ok(())
+}
+
+/// Execute a transfer whose destination is an `s3://bucket/prefix` URI.
+///
+/// Each bin is packed to a `tar.zst` chunk and uploaded under the prefix; the
+/// manifest is PUT last (`<prefix>/.dpl/manifest.json`). Two modes:
+///   - default: pack to a local temp file, then multipart-upload it (stable
+///     source allows retry; needs ~one-chunk of scratch space).
+///   - `--nodisk`: pipe pack -> multipart upload with no local spill.
+fn run_s3(args: &Cli, plan: Plan, dst_raw: &str) -> Result<()> {
+    let dest = s3::parse(dst_raw)?;
+    let zstd_threads = args.effective_threads().max(1) as u32;
+    let zstd_level = args.compress_level;
+
+    if !args.quiet {
+        eprintln!("── dpl -> S3 ───────────────────────────────────────");
+        eprintln!("  dest          : {}", dest.uri(".dpl/"));
+        eprintln!("  bins          : {}", plan.bins.len());
+        eprintln!(
+            "  mode          : {}",
+            if args.nodisk {
+                "streaming (--nodisk)"
+            } else {
+                "temp-local then upload"
+            }
+        );
+    }
+
+    // Scratch dir for the temp-local path (skipped under --nodisk).
+    let tmp_dir = std::env::temp_dir();
+    let mut reports: Vec<ChunkReport> = Vec::with_capacity(plan.bins.len());
+
+    let t_run = std::time::Instant::now();
+    for bin in &plan.bins {
+        let report = if args.nodisk {
+            dest.put_bin_streaming(bin, zstd_level, zstd_threads)?
+        } else {
+            // Pack to a uniquely-named temp file, upload, remove.
+            let tmp = tmp_dir.join(format!(".dpl-{}-{}", std::process::id(), bin.archive));
+            let r = (|| -> Result<ChunkReport> {
+                let report = pack_bin(bin, &tmp, zstd_level, zstd_threads, |_| {})?;
+                dest.put_file(&bin.archive, &tmp)?;
+                Ok(report)
+            })();
+            let _ = fs::remove_file(&tmp); // best-effort cleanup, even on error
+            r?
+        };
+
+        if args.verbose >= 1 && !args.quiet {
+            eprintln!(
+                "  chunk #{:>5}  {} files  {} -> {}",
+                report.id,
+                report.file_count,
+                format_size(report.uncompressed_bytes, BINARY),
+                dest.uri(&report.archive),
+            );
+        }
+        reports.push(report);
+    }
+    let run_secs = t_run.elapsed().as_secs_f64();
+
+    // Manifest last, so its presence means the whole set landed.
+    let manifest = Manifest {
+        plan,
+        chunks: reports,
+        schema_version: 1,
+    };
+    let json = serde_json::to_string_pretty(&manifest)?;
+    dest.put_bytes(".dpl/manifest.json", json.as_bytes())?;
+
+    if !args.quiet {
+        let total_compressed: u64 = manifest.chunks.iter().map(|c| c.compressed_bytes).sum();
+        let total_uncompressed: u64 = manifest.chunks.iter().map(|c| c.uncompressed_bytes).sum();
+        eprintln!("── done ───────────────────────────────────────────");
+        eprintln!("  bins uploaded : {}", manifest.chunks.len());
+        eprintln!(
+            "  uncompressed  : {}",
+            format_size(total_uncompressed, BINARY)
+        );
+        eprintln!(
+            "  compressed    : {} (ratio {:.2})",
+            format_size(total_compressed, BINARY),
+            if total_compressed > 0 {
+                total_uncompressed as f64 / total_compressed as f64
+            } else {
+                0.0
+            }
+        );
+        eprintln!("  upload time   : {run_secs:.2}s");
+        if run_secs > 0.0 {
+            eprintln!(
+                "  wire avg      : {}",
+                format_size((total_compressed as f64 / run_secs) as u64, BINARY)
+            );
+        }
+        eprintln!("  manifest      : {}", dest.uri(".dpl/manifest.json"));
+    }
     Ok(())
 }
 

@@ -17,3 +17,11 @@ transfer_plan.json
 bench_transfer/folders.csv
 bench_transfer/folders_small.csv
 bench_transfer/results_*.md
+
+# transient build/diagnostic scratch
+git_guard.txt
+help_check.txt
+build_errors.txt
+be_v2.txt
+gate_*.txt
+push_result.txt

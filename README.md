@@ -191,7 +191,42 @@ dpl --extract dst/ restored/
 # inspect transferred archives
 dpl --list dst/ '*.rs'
 dpl --grep 'needle' dst/
+
+# transfer to S3 (or any S3-compatible store)
+dpl -a src/ s3://my-bucket/backups/repo
+dpl -a --nodisk src/ s3://my-bucket/backups/repo   # stream, no local scratch
 ```
+
+## S3 destinations
+
+A destination of the form `s3://bucket/prefix` uploads the `chunk_*.tar.zst`
+archives and `manifest.json` under that prefix instead of writing a local
+mount. The same bin-packing applies, so a million-small-file tree becomes a
+handful of large sequential `PutObject` / multipart uploads — the per-object
+request overhead that makes naive `aws s3 sync` slow is amortized away.
+
+Two upload modes:
+
+| Mode | Flag | Behavior | Needs |
+| ---- | ---- | -------- | ----- |
+| temp-local (default) | — | pack each chunk to a local temp file, then multipart-upload it | ~1 chunk of scratch (`$TMPDIR`) |
+| streaming | `--nodisk` | pipe pack → multipart upload, no spill | no scratch disk |
+
+Credentials use the standard AWS chain: `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`), or `~/.aws/credentials`,
+or instance metadata. Region from `AWS_REGION` / `AWS_DEFAULT_REGION`.
+
+For S3-compatible stores (MinIO, Ceph, Backblaze B2, Wasabi…) set
+`AWS_ENDPOINT_URL` — path-style addressing is enabled automatically:
+
+```bash
+export AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…
+export AWS_ENDPOINT_URL=https://minio.example.com  AWS_REGION=us-east-1
+dpl -a ./repo s3://backups/repo
+```
+
+Restore is symmetric — point `--extract` at the bucket prefix once the
+read-side S3 support lands; today extraction reads a local archive dir.
 
 ### rsync flags supported
 
