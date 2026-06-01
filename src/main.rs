@@ -277,20 +277,42 @@ fn run_s3(args: &Cli, plan: Plan, dst_raw: &str) -> Result<()> {
         );
     }
 
+    // Progress bar tracks uploaded (compressed) bytes — unlike the local
+    // path which counts uncompressed pack bytes, here the upload is the wire
+    // cost, so the total is unknown up front (spinner + bytes, no ETA).
+    let pb = if args.progress || args.partial_progress {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.green} [{elapsed_precise}] uploaded {bytes} ({bytes_per_sec})",
+            )
+            .unwrap(),
+        );
+        Some(pb)
+    } else {
+        None
+    };
+
     // Scratch dir for the temp-local path (skipped under --nodisk).
     let tmp_dir = std::env::temp_dir();
     let mut reports: Vec<ChunkReport> = Vec::with_capacity(plan.bins.len());
 
     let t_run = std::time::Instant::now();
     for bin in &plan.bins {
+        let pb_for_bin = pb.clone();
+        let on_upload = move |n: u64| {
+            if let Some(p) = &pb_for_bin {
+                p.inc(n);
+            }
+        };
         let report = if args.nodisk {
-            dest.put_bin_streaming(bin, zstd_level, zstd_threads)?
+            dest.put_bin_streaming(bin, zstd_level, zstd_threads, on_upload)?
         } else {
             // Pack to a uniquely-named temp file, upload, remove.
             let tmp = tmp_dir.join(format!(".dpl-{}-{}", std::process::id(), bin.archive));
             let r = (|| -> Result<ChunkReport> {
                 let report = pack_bin(bin, &tmp, zstd_level, zstd_threads, |_| {})?;
-                dest.put_file(&bin.archive, &tmp)?;
+                dest.put_file(&bin.archive, &tmp, on_upload)?;
                 Ok(report)
             })();
             let _ = fs::remove_file(&tmp); // best-effort cleanup, even on error
@@ -307,6 +329,9 @@ fn run_s3(args: &Cli, plan: Plan, dst_raw: &str) -> Result<()> {
             );
         }
         reports.push(report);
+    }
+    if let Some(p) = &pb {
+        p.finish_with_message("done");
     }
     let run_secs = t_run.elapsed().as_secs_f64();
 

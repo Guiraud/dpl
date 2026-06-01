@@ -121,21 +121,24 @@ impl S3Dest {
         ensure_2xx(resp.status_code(), &key)
     }
 
-    /// Upload an existing local file via multipart (16 MiB parts).
-    pub fn put_file(&self, name: &str, path: &Path) -> Result<()> {
+    /// Upload an existing local file via multipart (16 MiB parts). `on_upload`
+    /// is called with the byte count of each part as it lands (for progress).
+    pub fn put_file(&self, name: &str, path: &Path, on_upload: impl FnMut(u64)) -> Result<()> {
         let f = std::fs::File::open(path)
             .with_context(|| format!("opening temp chunk {}", path.display()))?;
-        self.upload_reader(name, std::io::BufReader::new(f))
+        self.upload_reader(name, std::io::BufReader::new(f), on_upload)
     }
 
     /// Pack a bin straight into a multipart upload — no local scratch file.
     /// A packer thread writes the tar+zstd stream into a pipe; this thread
-    /// drains the pipe into S3 part by part as the bytes arrive.
+    /// drains the pipe into S3 part by part as the bytes arrive. `on_upload`
+    /// reports each uploaded part's size for progress.
     pub fn put_bin_streaming(
         &self,
         bin: &Bin,
         zstd_level: i32,
         zstd_threads: u32,
+        on_upload: impl FnMut(u64),
     ) -> Result<ChunkReport> {
         let (reader, writer) = os_pipe::pipe().context("creating upload pipe")?;
 
@@ -148,7 +151,7 @@ impl S3Dest {
             });
 
             // Uploader drains the pipe concurrently.
-            self.upload_reader(&bin.archive, reader)
+            self.upload_reader(&bin.archive, reader, on_upload)
                 .with_context(|| format!("streaming {}", self.uri(&bin.archive)))?;
 
             packer
@@ -162,7 +165,12 @@ impl S3Dest {
     /// a temp `File` and the streaming `os_pipe`), uploading each part through
     /// the async client on the embedded runtime. On any error the upload is
     /// aborted so no orphaned parts are billed.
-    fn upload_reader<R: Read>(&self, name: &str, mut reader: R) -> Result<()> {
+    fn upload_reader<R: Read>(
+        &self,
+        name: &str,
+        mut reader: R,
+        mut on_upload: impl FnMut(u64),
+    ) -> Result<()> {
         const PART_SIZE: usize = 16 * 1024 * 1024; // 16 MiB (>= S3's 5 MiB min)
         let key = self.key(name);
         let ct = "application/octet-stream".to_string();
@@ -195,6 +203,7 @@ impl S3Dest {
                         &ct,
                     ))
                     .map_err(|e| anyhow::anyhow!("uploading part {part_number} of {key}: {e}"))?;
+                on_upload(n as u64); // report bytes actually uploaded
                 parts.push(part);
                 part_number += 1;
                 if n < PART_SIZE {
