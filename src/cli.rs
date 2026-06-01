@@ -22,11 +22,12 @@ pub struct Cli {
     #[arg(short = 'n', long = "dry-run")]
     pub dry_run: bool,
 
-    /// Same as --partial --progress.
+    /// Same as --partial --progress (kept for rsync compatibility; progress
+    /// is on by default now, so this is a no-op flag).
     #[arg(short = 'P')]
     pub partial_progress: bool,
 
-    /// Show progress bar.
+    /// Show progress bar (on by default; use --quiet to silence).
     #[arg(long)]
     pub progress: bool,
 
@@ -200,6 +201,13 @@ impl Cli {
     pub fn effective_threads(&self) -> usize {
         self.threads
             .unwrap_or_else(|| (num_cpus::get_physical() / 2).max(1))
+    }
+
+    /// Whether to draw a progress bar. On by default; `--quiet` silences it.
+    /// (`--progress`/`-P` are kept for rsync compatibility but no longer
+    /// required to enable it.)
+    pub fn show_progress(&self) -> bool {
+        !self.quiet
     }
 
     /// Resolve the operation mode and validate per-mode positional arity.

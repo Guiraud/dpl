@@ -160,7 +160,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("creating archive dir {}", archive_dir.display()))?;
 
     let total_bytes = plan.stats.total_bytes;
-    let pb = if args.progress || args.partial_progress {
+    let pb = if args.show_progress() {
         let pb = ProgressBar::new(total_bytes);
         pb.set_style(
             ProgressStyle::with_template(
@@ -280,7 +280,7 @@ fn run_s3(args: &Cli, plan: Plan, dst_raw: &str) -> Result<()> {
     // Progress bar tracks uploaded (compressed) bytes — unlike the local
     // path which counts uncompressed pack bytes, here the upload is the wire
     // cost, so the total is unknown up front (spinner + bytes, no ETA).
-    let pb = if args.progress || args.partial_progress {
+    let pb = if args.show_progress() {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::with_template(
